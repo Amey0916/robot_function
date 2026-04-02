@@ -31,6 +31,7 @@ include_directories(
 install(PROGRAMS
     scripts/block_spawner.py
     scripts/set_init_amcl_pose.py
+    scripts/origin_marker.py
     DESTINATION lib/${PROJECT_NAME}
 )
 

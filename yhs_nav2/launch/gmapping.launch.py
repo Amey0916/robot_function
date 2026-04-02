@@ -135,7 +135,15 @@ def generate_launch_description():
     ld.add_action(declare_use_respawn_cmd)
     ld.add_action(declare_log_level_cmd)
 
+    origin_marker_node = Node(
+        package='yhs_nav2',
+        executable='origin_marker.py',
+        name='origin_marker_node',
+        output='screen'
+    )
+
     # Add the actions to launch all of the navigation nodes
     ld.add_action(bringup_cmd_group)
+    ld.add_action(origin_marker_node)
 
     return ld
