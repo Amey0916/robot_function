@@ -59,6 +59,8 @@ namespace can_control
     bool web_lamp_on_{false};       // 记录小程序端灯光状态
     unsigned char io_cmd_count_{0};   // IO 指令帧序列号（独立成员，避免 static 被多路径共享导致序列号混乱）
     unsigned char ctrl_cmd_count_{0};  // ctrl 指令帧序列号（独立成员，与 IO 序列号完全隔离）
+    unsigned char steer_cmd_count_{0}; // 阿克曼转向帧序列号（独立成员）
+    std::mutex can_write_mutex_;       // 保护 CAN 写操作和序列号，防止多线程竞争
 
     // 独立的 IO 保活定时器：以固定周期发送 IO 解锁帧，与 ctrl 帧完全解耦
     // 复刻遥控器行为：IO 帧和 ctrl 帧各自独立发送，互不干扰，避免转向抖动

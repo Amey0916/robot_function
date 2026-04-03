@@ -80,8 +80,7 @@ namespace can_control
   void FwCanControl::FwIoCmdCallBack(const yhs_can_interfaces::msg::FwIoCmd::SharedPtr io_cmd_msg)
   {
     yhs_can_interfaces::msg::FwIoCmd msg = *io_cmd_msg;
-    // 使用成员变量而非 static，避免 io_keepalive_timer_ 和 WebIoCmdCallBack
-    // 两条路径同时调用时共享序列号导致 count 不连续，底盘 MCU 触发安全复位（抖动根因）
+    std::lock_guard<std::mutex> lock(can_write_mutex_);
     unsigned char count = io_cmd_count_;
     io_cmd_count_ = (io_cmd_count_ + 1) % 16;
 
@@ -142,6 +141,7 @@ namespace can_control
     const unsigned char gear = msg.ctrl_cmd_gear;
 
     // ctrl 指令帧序列号使用成员变量，与 IO 帧序列号完全隔离
+    std::lock_guard<std::mutex> lock(can_write_mutex_);
     unsigned char count = ctrl_cmd_count_;
     ctrl_cmd_count_ = (ctrl_cmd_count_ + 1) % 16;
     unsigned char sendDataTemp[8] = {0};
@@ -255,7 +255,9 @@ namespace can_control
     const short steering_ctrl_cmd_steering = msg.steering_ctrl_cmd_steering * 100;
     const unsigned char gear = msg.ctrl_cmd_gear;
 
-    static unsigned char count = 0;
+    std::lock_guard<std::mutex> lock(can_write_mutex_);
+    unsigned char count = steer_cmd_count_;
+    steer_cmd_count_ = (steer_cmd_count_ + 1) % 16;
     unsigned char sendDataTemp[8] = {0};
 
     sendDataTemp[0] = sendDataTemp[0] | (0x0f & gear);
@@ -271,10 +273,6 @@ namespace can_control
     sendDataTemp[3] = (steering_ctrl_cmd_steering >> 4) & 0xff;
 
     sendDataTemp[4] = sendDataTemp[4] | (0x0f & (steering_ctrl_cmd_steering >> 12));
-
-    count++;
-    if (count == 16)
-      count = 0;
 
     sendDataTemp[6] = count << 4;
 

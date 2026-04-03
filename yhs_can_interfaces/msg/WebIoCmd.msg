@@ -1,0 +1,18 @@
+uint8 chassis_type
+uint8 CHASSIS_DGT=0
+uint8 CHASSIS_FW=1
+uint8 CHASSIS_FR=2
+uint8 CHASSIS_MK=3
+
+bool io_cmd_enable
+bool io_cmd_lamp_ctrl
+bool io_cmd_unlock
+bool io_cmd_lower_beam_headlamp
+bool io_cmd_upper_beam_headlamp
+uint8 io_cmd_turn_lamp
+bool io_cmd_braking_lamp
+bool io_cmd_clearance_lamp
+bool io_cmd_fog_lamp
+uint8 io_cmd_speaker
+uint8 io_cmd_wireless_charge
+bool io_cmd_dis_charge
