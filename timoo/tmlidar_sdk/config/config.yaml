@@ -1,0 +1,48 @@
+common:
+  msg_source: 1                                         #0: not use Lidar
+                                                        #1: packet message comes from online Lidar
+                                                        #2: packet message comes from ROS or ROS2
+                                                        #3: packet message comes from Pcap file
+                                                        #4: packet message comes from Protobuf-UDP
+                                                        #5: point cloud comes from Protobuf-UDP
+  send_packet_ros: false                                #true: Send packets through ROS or ROS2(Used to record packet)
+  send_point_cloud_ros: true                            #true: Send point cloud through ROS or ROS2
+  send_packet_proto: false                              #true: Send packets through Protobuf-UDP
+  send_point_cloud_proto: false                         #true: Send point cloud through Protobuf-UDP
+  send_imu_ros: false                                   #true: Send imu through ROS or ROS2
+  pcap_path: /home/yhs/Lidar.pcap                 #The path of pcap file
+
+lidar:
+  - driver:
+      lidar_type: TM16            #LiDAR type - TM16, TM32, TM64, TM128, TM300
+      frame_id: laser_link           #Frame id of message
+      msop_port: 2368              #Msop port of lidar
+      difop_port: 8603             #Difop port of lidar
+      left_min_angle: 0           #顺时针保留部分，不屏蔽，实际右边 0~180
+      left_max_angle: 45          #顺时针保留部分，不屏蔽，实际左边 180~360
+      right_min_angle: 325
+      right_max_angle: 360
+      hide_line: 0,1,2,3
+      filter_threshold: 1,10,10,10
+      cut_start_angle: 135               #Cut start angle of point cloud
+      cut_end_angle: 225               #cut end angle of point cloud 
+      min_distance: 0.2            #Minimum distance of point cloud
+      max_distance: 200            #Maximum distance of point cloud
+      use_lidar_clock: False       #True--Use the lidar clock as the message timestamp
+                                   #False-- Use the system clock as the timestamp  
+    ros:
+      ros_recv_packet_topic: /tmlidar_packets          #Topic used to receive lidar packets from ROS
+      ros_send_packet_topic: /tmlidar_packets          #Topic used to send lidar packets through ROS
+      ros_send_point_cloud_topic: /tmlidar_points      #Topic used to send point cloud through ROS
+      ros_send_imu_topic: /tmlidar_imu
+    proto:
+      point_cloud_recv_port: 60021                     #Port number used for receiving point cloud 
+      point_cloud_send_port: 60021                     #Port number which the point cloud will be send to
+      msop_recv_port: 60022                            #Port number used for receiving lidar msop packets
+      msop_send_port: 60022                            #Port number which the msop packets will be send to 
+      difop_recv_port: 60023                           #Port number used for receiving lidar difop packets
+      difop_send_port: 60023                           #Port number which the difop packets will be send to 
+      point_cloud_send_ip: 127.0.0.1                   #Ip address which the point cloud will be send to 
+      packet_send_ip: 127.0.0.1                        #Ip address which the lidar packets will be send to
+   
+

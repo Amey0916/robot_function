@@ -1,0 +1,28 @@
+<?xml version="1.0"?>
+<package format="2">
+  <name>tmlidar_sdk</name>
+  <version>1.1.0</version>
+  <description>The tmlidar_sdk package</description>
+  <maintainer email="timooservice@gslidar.com">timoo</maintainer>
+  <license>BSD</license>
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <build_depend>rclcpp</build_depend>
+  <build_depend>sensor_msgs</build_depend>
+  <build_depend>std_msgs</build_depend>
+  <build_depend>pcl_conversions</build_depend>
+  
+  <exec_depend>rclcpp</exec_depend>
+  <exec_depend>sensor_msgs</exec_depend>
+  <exec_depend>std_msgs</exec_depend>
+  <exec_depend>pcl_conversions</exec_depend>
+  
+  <depend>tmlidar_msg</depend>
+  <export>
+     <build_type>ament_cmake</build_type>
+  </export>
+  
+</package>
+
+
+
