@@ -313,6 +313,12 @@ class GestureBodyDetectionNode(Node):
         self.get_logger().info("🗣️ 支持语音指令：跟随（开启follow）、停止跟随（关闭follow）")
         self.get_logger().info("📸 已发布摄像头帧话题：/camera_frame（供come_mode_node订阅）")
 
+    def _publish_stop_orientation(self):
+        """退出follow模式时立刻发布一次 none，清除残留的 center/left/right 指令"""
+        stop_msg = String()
+        stop_msg.data = "none"
+        self.orientation_pub.publish(stop_msg)
+
     # 新增：语音follow模式回调函数
     def voice_follow_callback(self, msg):
         """处理语音的follow模式控制指令"""
@@ -330,6 +336,7 @@ class GestureBodyDetectionNode(Node):
                 self.follow_gesture_count = 0  # 同步计数，确保手势切换逻辑正常
                 self.last_follow_time = now
                 self.get_logger().info("🗣️ 语音指令触发：退出follow模式，停止人体检测！")
+                self._publish_stop_orientation()
             else:
                 self.get_logger().warn(f"🗣️ 未知的follow模式指令：{cmd}")
         else:
@@ -538,6 +545,7 @@ class GestureBodyDetectionNode(Node):
                 else:
                     self.is_follow_mode = False
                     self.get_logger().info("退出follow模式，停止人体检测！")
+                    self._publish_stop_orientation()
 
         # -------------------------- 第二步：人体检测（仅follow模式执行） --------------------------
         if self.is_follow_mode:
