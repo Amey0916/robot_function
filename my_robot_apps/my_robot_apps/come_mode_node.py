@@ -160,6 +160,8 @@ class ComeModeNode(Node):
                 self.current_state = ComeModeState.ROTATING
                 self.come_triggered = False
                 self.window_open = True
+                self.person_detected = False
+                self.shoulder_mid_x = 0.0
                 self.get_logger().info("▶️ 开启检测 + 显示窗口")
 
         elif self.current_state == ComeModeState.ROTATING:
@@ -171,7 +173,10 @@ class ComeModeNode(Node):
 
         elif self.current_state == ComeModeState.MOVING:
             self.detection_enabled = True
-            if self.person_distance <= 0.0:
+            if not self.person_detected:
+                self.current_state = ComeModeState.ROTATING
+                twist.angular.z = 0.2
+            elif self.person_distance <= 0.0:
                 twist.linear.x = 0.0
             elif self.person_distance <= self.target_distance:
                 twist.linear.x = 0.0
