@@ -51,6 +51,7 @@ class ComeModeNode(Node):
         self.current_state = ComeModeState.IDLE
         self.come_triggered = False
         self.shoulder_mid_x = 0.0
+        self.person_detected = False
         self.target_distance = 0.6
         self.person_distance = -1.0
         self.frame_timestamp = 0
@@ -128,6 +129,7 @@ class ComeModeNode(Node):
             # 计算肩中点
             lm = result.pose_landmarks[0]
             self.shoulder_mid_x = (lm[11].x + lm[12].x) / 2
+            self.person_detected = True
             
             # 绘制红点
             h, w = frame.shape[:2]
@@ -137,6 +139,7 @@ class ComeModeNode(Node):
             return out_frame
         else:
             self.shoulder_mid_x = 0.0
+            self.person_detected = False
             return frame
 
     # 主状态机
@@ -161,7 +164,7 @@ class ComeModeNode(Node):
 
         elif self.current_state == ComeModeState.ROTATING:
             self.detection_enabled = True
-            if 5/12 <= self.shoulder_mid_x <= 7/12:
+            if self.person_detected and 5/12 <= self.shoulder_mid_x <= 7/12:
                 self.current_state = ComeModeState.MOVING
             else:
                 twist.angular.z = 0.2
