@@ -65,6 +65,10 @@ class ComeModeNode(Node):
         self.bridge = CvBridge()
         self.center_confirm_count = 0
 
+        # 【新增】人脸关键点是否检测到（用于旋转定位前提条件）
+        # 只有同时检测到人脸和两肩中点，才判定为"正面人"，允许进入旋转锁定
+        self.face_detected = False
+
         # 释放扭力专用
         self.release_start_time = 0.0
         self.releasing_torque = False
@@ -107,21 +111,40 @@ class ComeModeNode(Node):
         frame = cv2.flip(frame, 1)
         frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=frame_rgb)
-        self.frame_timestamp +=1
+        self.frame_timestamp += 1
         res = self.pose_landmarker.detect_for_video(mp_image, self.frame_timestamp)
         if res.pose_landmarks:
             anno_rgb = draw_pose_landmarks_on_image(frame_rgb, res)
             out = cv2.cvtColor(anno_rgb, cv2.COLOR_RGB2BGR)
             lm = res.pose_landmarks[0]
-            self.shoulder_mid_x = (lm[11].x + lm[12].x)/2
+
+            # ── 主位置判断依据：两肩中点 ──────────────────────────────────────────
+            # 左肩=lm[11]，右肩=lm[12]，取水平方向归一化中点
+            self.shoulder_mid_x = (lm[11].x + lm[12].x) / 2
             self.person_detected = True
-            h,w = frame.shape[:2]
-            cx = int(self.shoulder_mid_x *w)
-            cy = int((lm[11].y+lm[12].y)/2 *h)
-            cv2.circle(out,(cx,cy),8,(0,0,255),-1)
+
+            # ── 前提条件：人脸关键点检测 ──────────────────────────────────────────
+            # MediaPipe Pose 中面部关键点索引：
+            #   0=鼻尖, 2=左眼, 5=右眼（以及其他面部点）
+            # 此处仅检测鼻尖和双眼的可见度（visibility > 0.5），
+            # 满足任一即视为"检测到人脸"，代表当前是正面或基本正面姿态
+            # 用途：只有同时检测到人脸 + 两肩中点，才判定为正面人，允许旋转定位
+            face_visible = (
+                lm[0].visibility > 0.5 or   # 鼻尖
+                lm[2].visibility > 0.5 or   # 左眼
+                lm[5].visibility > 0.5      # 右眼
+            )
+            self.face_detected = face_visible
+
+            h, w = frame.shape[:2]
+            cx = int(self.shoulder_mid_x * w)
+            cy = int((lm[11].y + lm[12].y) / 2 * h)
+            cv2.circle(out, (cx, cy), 8, (0, 0, 255), -1)
             return out
         else:
+            # 未检测到姿态：清除人体和人脸标志
             self.person_detected = False
+            self.face_detected = False
             return frame
 
     def main_loop(self):
@@ -139,26 +162,41 @@ class ComeModeNode(Node):
                 self.releasing_torque = False
 
         elif self.current_state == ComeModeState.ROTATING:
-            if self.person_detected:
-                offset = self.shoulder_mid_x -0.5
-                if 5/12 <= self.shoulder_mid_x <=7/12:
-                    self.center_confirm_count +=1
+            # ══════════════════════════════════════════════════════════════════
+            # 旋转定位阶段：前提条件 = 同时检测到人脸关键点 + 两肩中点
+            #   ① 满足前提（正面人）：用肩中点偏移量计算角速度，比例渐进对准
+            #   ② 不满足前提（侧身/无人）：持续右转搜寻，直到检测到正面人
+            # 设计意图：防止侧身/遮挡时肩部误判导致错误锁定，只有正面人才触发定位
+            # ══════════════════════════════════════════════════════════════════
+            if self.person_detected and self.face_detected:
+                # 正面人已检测到（肩部 + 人脸同时存在），开始精确对准
+                offset = self.shoulder_mid_x - 0.5
+                if 5/12 <= self.shoulder_mid_x <= 7/12:
+                    # 肩中点已在画面中央区间（5/12 ~ 7/12）
+                    self.center_confirm_count += 1
                     if abs(offset) > SOFT_LANDING_OFFSET_THRESHOLD:
-                        twist.angular.z = SLOW_ROTATION_SPEED if offset>0 else -SLOW_ROTATION_SPEED
+                        # 软着陆：仍有微小偏差，用慢速微调消除惯性
+                        twist.angular.z = SLOW_ROTATION_SPEED if offset > 0 else -SLOW_ROTATION_SPEED
                     else:
-                        twist.angular.z =0.0
+                        # 偏差极小，停止旋转
+                        twist.angular.z = 0.0
                     if self.center_confirm_count >= CENTER_CONFIRM_FRAMES:
+                        # 连续多帧确认居中，进入稳定/释放扭力阶段
                         self.current_state = ComeModeState.ROTATING_STABILIZING
                         self.releasing_torque = True
                         self.release_start_time = time.time()
-                        self.center_confirm_count =0
+                        self.center_confirm_count = 0
                 else:
-                    self.center_confirm_count =0
+                    # 肩中点偏离中心，重置计数，用比例控制角速度旋转对准
+                    self.center_confirm_count = 0
                     speed = KP_ROTATION * abs(offset)
                     speed = max(speed, MIN_ROTATION_SPEED)
                     speed = min(speed, FULL_ROTATION_SPEED)
-                    twist.angular.z = speed if offset>0 else -speed
+                    twist.angular.z = speed if offset > 0 else -speed
             else:
+                # 未检测到正面人（无人脸 or 侧身 or 完全无人）
+                # 持续右转搜寻，直到检测到正面人（人脸+肩部同时出现）再对准
+                self.center_confirm_count = 0
                 twist.angular.z = FULL_ROTATION_SPEED
 
         # ===================== 【核心：释放扭力 + 不打滑】 =====================
@@ -183,6 +221,8 @@ class ComeModeNode(Node):
                     self.current_state = ComeModeState.MOVING
 
         elif self.current_state == ComeModeState.MOVING:
+            # 前进阶段：不再需要人脸，只用两肩中点判断是否仍检测到人体
+            # 设计意图：前进时人可能侧身或部分遮挡，只要肩部可见就继续跟进
             if not self.person_detected:
                 self.current_state = ComeModeState.ROTATING
             elif self.person_distance > self.target_distance:
