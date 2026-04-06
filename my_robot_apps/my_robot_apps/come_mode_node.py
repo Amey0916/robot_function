@@ -27,8 +27,13 @@ class ComeModeState:
     MOVING = 2
     STOP = 3
 
-# 居中确认所需的连续帧数，用于消除旋转停止后的惯性过冲
-CENTER_CONFIRM_FRAMES = 3
+# 旋转控制参数
+CENTER_CONFIRM_FRAMES = 3        # 居中确认所需连续帧数（多帧满足才进入前进，防止单帧误判）
+FULL_ROTATION_SPEED = 0.2        # 全速旋转角速度（无人检测或偏离较远时使用）
+SLOW_ROTATION_SPEED = 0.05       # 软着陆慢速角速度（进入中心区间后缓冲惯性）
+KP_ROTATION = 0.8                # P控制比例系数（越偏离中心，角速度越大）
+MIN_ROTATION_SPEED = 0.08        # P控制下的最小旋转速度（保证有效转向）
+SOFT_LANDING_OFFSET_THRESHOLD = 0.01  # 软着陆区间内判定"已足够居中"的偏移量阈值
 
 # 人体骨架绘制函数
 def draw_pose_landmarks_on_image(rgb_image, detection_result):
@@ -171,16 +176,38 @@ class ComeModeNode(Node):
 
         elif self.current_state == ComeModeState.ROTATING:
             self.detection_enabled = True
-            if self.person_detected and 5/12 <= self.shoulder_mid_x <= 7/12:
-                # 居中时不再给角速度，等待连续若干帧确认稳住后再推进
-                self.center_confirm_count += 1
-                twist.angular.z = 0.0
-                if self.center_confirm_count >= CENTER_CONFIRM_FRAMES:
+            if self.person_detected:
+                # P控制：以肩中点偏离画面中线的量直接调节角速度大小
+                # 越靠近中心，角速度越小，实现软着陆效果
+                offset = self.shoulder_mid_x - 0.5  # 负值: 人偏左; 正值: 人偏右
+                if 5/12 <= self.shoulder_mid_x <= 7/12:
+                    # 进入中心区间：软着陆 + 多帧确认
+                    # 先给一个小角速度抵消旋转惯性（软着陆），连续确认后再完全停止
+                    self.center_confirm_count += 1
+                    if self.center_confirm_count < CENTER_CONFIRM_FRAMES:
+                        # 软着陆：保持极小角速度，缓冲剩余惯性，防止一停就滑
+                        if abs(offset) > SOFT_LANDING_OFFSET_THRESHOLD:
+                            twist.angular.z = (
+                                SLOW_ROTATION_SPEED if offset > 0 else -SLOW_ROTATION_SPEED
+                            )
+                        else:
+                            twist.angular.z = 0.0
+                    else:
+                        # 连续多帧居中确认完成，完全停转并切入前进
+                        twist.angular.z = 0.0
+                        self.center_confirm_count = 0
+                        self.current_state = ComeModeState.MOVING
+                else:
+                    # 尚未进入中心区间：P控制角速度，偏得越多转得越快
                     self.center_confirm_count = 0
-                    self.current_state = ComeModeState.MOVING
+                    angular_speed = KP_ROTATION * abs(offset)
+                    angular_speed = max(angular_speed, MIN_ROTATION_SPEED)  # 保证最小旋转
+                    angular_speed = min(angular_speed, FULL_ROTATION_SPEED)  # 限制最大速度
+                    twist.angular.z = angular_speed if offset > 0 else -angular_speed
             else:
+                # 未检测到人体：全速右转搜索
                 self.center_confirm_count = 0
-                twist.angular.z = 0.2
+                twist.angular.z = FULL_ROTATION_SPEED
 
         elif self.current_state == ComeModeState.MOVING:
             self.detection_enabled = True
