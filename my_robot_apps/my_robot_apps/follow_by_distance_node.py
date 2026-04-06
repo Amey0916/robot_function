@@ -85,13 +85,9 @@ class FollowByDistanceNode(Node):
 
     def _timer_pub(self):
         """高频定时发布缓存的速度指令，保证前进指令连续下发，消除因消息间隔导致的停顿。"""
-        was_active = self.active
         self._check_timeout()
 
         if not self.active:
-            # 从激活态超时失活时，发布一次零速，确保机器人及时停止
-            if was_active:
-                self.pub.publish(Twist())
             return
 
         self.pub.publish(self._cached_twist)
