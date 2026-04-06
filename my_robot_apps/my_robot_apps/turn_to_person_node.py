@@ -35,11 +35,8 @@ class TurnToPersonNode(Node):
             twist.angular.z = 0.1
         elif self.direction == 'right':
             twist.angular.z = -0.1
-        elif self.direction == 'center':
-            # 方向已居中，不发布转向指令，由 follow_by_distance_node 负责前进控制，
-            # 避免与其在 /cmd_vel 上产生竞争，导致"走—停—走—停"现象
-            return
-        # "none" 或其他情况：发布零速，确保机器人停止
+        elif self.direction == 'center' or self.direction == "none":
+            twist.angular.z = 0.0
         self.pub.publish(twist)
 
     def publish_twist(self):
