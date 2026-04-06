@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 import rclpy
 from rclpy.node import Node
-from std_msgs.msg import String
+from std_msgs.msg import String, Bool
 # 新增：导入图像消息类型和CV桥接工具
 from sensor_msgs.msg import Image
 from cv_bridge import CvBridge
@@ -175,6 +175,9 @@ class GestureBodyDetectionNode(Node):
         # 新增：发布摄像头帧话题（供come_mode_node订阅）
         self.frame_pub = self.create_publisher(Image, '/camera_frame', 10)
         self.bridge = CvBridge()  # CV桥接工具（转换OpenCV帧到ROS2图像消息）
+
+        # 发布 follow 模式激活状态，供 come_mode_node 实现互斥
+        self.follow_mode_pub = self.create_publisher(Bool, '/follow_mode_active', 10)
         
         # 3. 核心状态变量
         self.is_follow_mode = False  # 是否启动人体检测
@@ -182,6 +185,11 @@ class GestureBodyDetectionNode(Node):
         self.frame_timestamp = 0     # MediaPipe Video模式时间戳
         self.follow_gesture_count = 0  # follow手势计数（奇数开，偶数关）
         self.last_follow_time = 0.0    # 上一次触发 follow 的时间
+
+        # ── 互斥模式标志 ──────────────────────────────────────────────────────
+        # 追踪 come 模式是否已激活（由 come_mode_node 发布）。
+        # 若 come 模式已激活，任何路径下的 follow 激活请求均被拒绝。
+        self.come_mode_active = False
         
         # 4. 自动查找并初始化绿联摄像头（核心修改）
         self.cam_device = auto_find_ugreen_camera()
@@ -308,6 +316,13 @@ class GestureBodyDetectionNode(Node):
             self.voice_follow_callback,
             10
         )
+        # 订阅 come 模式激活状态，用于互斥判断（come 激活时禁止进入 follow 模式）
+        self.come_mode_sub = self.create_subscription(
+            Bool,
+            '/come_mode_active',
+            self.come_mode_cb,
+            10
+        )
         
         self.get_logger().info("手势+人体检测节点启动成功！")
         self.get_logger().info("🗣️ 支持语音指令：跟随（开启follow）、停止跟随（关闭follow）")
@@ -319,6 +334,16 @@ class GestureBodyDetectionNode(Node):
         stop_msg.data = "none"
         self.orientation_pub.publish(stop_msg)
 
+    def _publish_follow_mode_active(self, active: bool):
+        """发布 follow 模式激活状态，用于与 come 模式互斥"""
+        msg = Bool()
+        msg.data = active
+        self.follow_mode_pub.publish(msg)
+
+    def come_mode_cb(self, msg):
+        """接收 come 模式激活状态，更新互斥标志"""
+        self.come_mode_active = msg.data
+
     # 新增：语音follow模式回调函数
     def voice_follow_callback(self, msg):
         """处理语音的follow模式控制指令"""
@@ -327,14 +352,21 @@ class GestureBodyDetectionNode(Node):
         # 防抖：和手势follow共用同一个时间戳，避免频繁切换
         if now - self.last_follow_time >= FOLLOW_DEBOUNCE_SECONDS:
             if cmd == "start_follow":
+                # 互斥检查：come 模式激活时拒绝进入 follow 模式
+                if self.come_mode_active:
+                    self.get_logger().warn(
+                        "🚫 互斥拒绝：当前处于 come 模式，无法激活 follow 模式（语音触发）！")
+                    return
                 self.is_follow_mode = True
                 self.follow_gesture_count = 1  # 同步计数，确保手势切换逻辑正常
                 self.last_follow_time = now
+                self._publish_follow_mode_active(True)
                 self.get_logger().info("🗣️ 语音指令触发：进入follow模式，启动人体检测！")
             elif cmd == "stop_follow":
                 self.is_follow_mode = False
                 self.follow_gesture_count = 0  # 同步计数，确保手势切换逻辑正常
                 self.last_follow_time = now
+                self._publish_follow_mode_active(False)
                 self.get_logger().info("🗣️ 语音指令触发：退出follow模式，停止人体检测！")
                 self._publish_stop_orientation()
             else:
@@ -537,15 +569,24 @@ class GestureBodyDetectionNode(Node):
         if current_gesture == "follow":
             now = time.monotonic()
             if now - self.last_follow_time >= FOLLOW_DEBOUNCE_SECONDS:
-                self.last_follow_time = now
-                self.follow_gesture_count += 1
-                if self.follow_gesture_count % 2 == 1:
-                    self.is_follow_mode = True
-                    self.get_logger().info("进入follow模式，启动人体检测！")
+                # 互斥检查：come 模式激活时，若 follow 尚未激活则拒绝开启（保留已激活时可关闭的能力）
+                if self.come_mode_active and not self.is_follow_mode:
+                    self.get_logger().warn(
+                        "🚫 互斥拒绝：当前处于 come 模式，无法激活 follow 模式（手势触发）！")
+                    # 不更新 last_follow_time / follow_gesture_count，保留后续再次触发的机会
+                    # 注意：若 follow 模式已激活（异常状态），仍允许通过手势关闭，保证可恢复性
                 else:
-                    self.is_follow_mode = False
-                    self.get_logger().info("退出follow模式，停止人体检测！")
-                    self._publish_stop_orientation()
+                    self.last_follow_time = now
+                    self.follow_gesture_count += 1
+                    if self.follow_gesture_count % 2 == 1:
+                        self.is_follow_mode = True
+                        self._publish_follow_mode_active(True)
+                        self.get_logger().info("进入follow模式，启动人体检测！")
+                    else:
+                        self.is_follow_mode = False
+                        self._publish_follow_mode_active(False)
+                        self.get_logger().info("退出follow模式，停止人体检测！")
+                        self._publish_stop_orientation()
 
         # -------------------------- 第二步：人体检测（仅follow模式执行） --------------------------
         if self.is_follow_mode:
