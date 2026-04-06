@@ -1,6 +1,6 @@
 import rclpy
 from rclpy.node import Node
-from std_msgs.msg import Float32, String, Bool
+from std_msgs.msg import Float32, String
 from geometry_msgs.msg import Twist
 import numpy as np
 import time
@@ -8,75 +8,51 @@ import time
 # 超时阈值：超过此时间未收到 /cmd_orientation 则视为跟随模式已退出，停止发布
 _FOLLOW_TIMEOUT = 1.0  # 秒
 
-# 定时发布频率（Hz），高频持续发布保证前进指令连续，消除"走—停—走—停"现象
+# 定时发布频率（Hz），提高发布频率使前进指令更连续，消除"走—停—走—停"现象
 _PUBLISH_HZ = 20
 
-# 最大跟随速度（m/s）。修改此值可直接改变跟随模式的最高前进速度。
-MAX_FOLLOW_SPEED = 0.5
-
-# 旋转制动等待时间（秒）
-_ROTATION_HOLD_DELAY = 0.25
-
-
-# ✅【修复 1】补上缺失的 class 定义！
 class FollowByDistanceNode(Node):
     def __init__(self):
         super().__init__('follow_by_distance_node')
         self.create_subscription(Float32, '/person_distance', self.cb_distance, 10)
         self.create_subscription(String, '/cmd_orientation', self.cb_orientation, 10)
-
-        self.come_mode_active = False
-        self.create_subscription(Bool, '/come_mode_active', self._come_mode_cb, 10)
-
         self.pub = self.create_publisher(Twist, '/cmd_vel', 10)
         self.orientation = "none"
-        self.active = False
-        self.last_orientation_time = None
-        self._cached_twist = Twist()
-        self.rotation_hold_until = 0.0
 
+        # active 标志：只有在 /cmd_orientation 持续到来（跟随模式激活）时才发布 /cmd_vel。
+        # 当超过 _FOLLOW_TIMEOUT 秒未收到新消息时自动失活，停止向 /cmd_vel 写入，
+        # 从而避免与 come_mode_node / turn_to_person_node 产生指令冲突。
+        self.active = False
+        self.last_orientation_time = None  # 上次收到 /cmd_orientation 的时间戳
+
+        # 缓存上一次计算出的速度指令，由定时器持续发布（提高频率）
+        self._cached_twist = Twist()
+
+        # 高频定时器：以 _PUBLISH_HZ Hz 持续向 /cmd_vel 发布缓存的指令，
+        # 避免因距离消息间隔导致的"走—停—走—停"现象
         self.create_timer(1.0 / _PUBLISH_HZ, self._timer_pub)
 
-        self.get_logger().info(
-            f"follow_by_distance_node 启动，最大速度={MAX_FOLLOW_SPEED}m/s，"
-            "仅在 center 方向且 come 模式未激活时发布 /cmd_vel。")
-
-    def _come_mode_cb(self, msg):
-        self.come_mode_active = msg.data
-        if self.come_mode_active:
-            self._cached_twist = Twist()
-            self.get_logger().info("🔒 come 模式激活，follow_by_distance_node 停止输出 /cmd_vel。")
+        self.get_logger().info("仅在center时允许距离跟随小车移动。其它一律停止。")
 
     def cb_orientation(self, msg):
-        prev_orientation = self.orientation
         self.orientation = msg.data
+        # 收到方向指令：激活节点并刷新计时器
         self.active = True
         self.last_orientation_time = time.monotonic()
-
-        if prev_orientation in ('left', 'right') and self.orientation in ('center', 'none'):
-            self.rotation_hold_until = time.monotonic() + _ROTATION_HOLD_DELAY
-            self.get_logger().info("旋转结束，等待 0.25s 制动后再接管 /cmd_vel")
-
         self.get_logger().info(f"收到手势方向：{self.orientation}")
 
     def _check_timeout(self):
-        if self.last_orientation_time is not None and \
-                (time.monotonic() - self.last_orientation_time) > _FOLLOW_TIMEOUT:
+        """检测跟随模式是否超时，超时则失活并清零缓存指令。"""
+        if self.last_orientation_time is not None and (time.monotonic() - self.last_orientation_time) > _FOLLOW_TIMEOUT:
             self.active = False
             self._cached_twist = Twist()
 
     def cb_distance(self, msg):
+        # 超时检测：若已超过 _FOLLOW_TIMEOUT 秒未收到方向指令，则认为跟随模式已关闭
         self._check_timeout()
 
         if not self.active:
-            self._cached_twist = Twist()
-            return
-
-        if self.come_mode_active:
-            return
-
-        # ✅【优化】仅 center 方向允许前进，none 方向不前进（更安全）
-        if self.orientation != "center":
+            # 非激活时确保缓存已清零，不占用 /cmd_vel（由定时器统一发布）
             self._cached_twist = Twist()
             return
 
@@ -84,34 +60,34 @@ class FollowByDistanceNode(Node):
         twist = Twist()
         twist.angular.z = 0.0
 
+        # 只在center时跟随，否则强制停止
+        if self.orientation != "center":
+            twist.linear.x = 0.0
+            self._cached_twist = twist
+            self.get_logger().info("非center小车停止。")
+            return
+
         if np.isnan(dist) or dist == -1.0:
             twist.linear.x = 0.0
-            self.get_logger().warn(f"无效距离：{dist}，停止")
+            self.get_logger().warn(f"接收无效距离：{dist}，小车停止")
         elif dist < 0.3:
             twist.linear.x = -0.1
-            self.get_logger().info(f"距离:{dist:.2f} → 后退")
+            self.get_logger().info(f"距离:{dist:.2f}米 → 过近后退(-0.1m/s)")
         elif dist >= 1.0:
-            twist.linear.x = MAX_FOLLOW_SPEED
-            self.get_logger().info(f"距离:{dist:.2f} → 最大速度前进")
+            twist.linear.x = 0.2
+            self.get_logger().info(f"距离:{dist:.2f}米 → 距离较远前进(0.2m/s)")
         else:
-            speed = (dist - 0.3) / 0.7 * MAX_FOLLOW_SPEED
+            speed = (dist - 0.3) / (1.0 - 0.3) * 0.2
             twist.linear.x = speed
-            self.get_logger().info(f"距离:{dist:.2f} → 渐进速度({speed:.2f})")
+            self.get_logger().info(f"距离:{dist:.2f}米 → 渐进速度({speed:.2f}m/s)")
 
         self._cached_twist = twist
 
     def _timer_pub(self):
+        """高频定时发布缓存的速度指令，保证前进指令连续下发，消除因消息间隔导致的停顿。"""
         self._check_timeout()
 
-        if self.come_mode_active:
-            return
         if not self.active:
-            return
-        if time.monotonic() < self.rotation_hold_until:
-            return
-
-        # ✅【严格安全】仅 center 方向发布
-        if self.orientation != "center":
             return
 
         self.pub.publish(self._cached_twist)
