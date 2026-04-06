@@ -123,8 +123,34 @@ class ComeModeNode(Node):
             self.come_triggered = True
 
     def follow_mode_cb(self, msg):
-        """接收 follow 模式激活状态，更新互斥标志"""
+        """接收 follow 模式激活状态，更新互斥标志。
+        修复要点：
+          原来仅更新标志位并在新触发时拒绝，但若 come 模式已在运行中、
+          follow 模式随后被激活，come 模式会继续发布 /cmd_vel，造成两模式并发冲突。
+          修复方案：当 follow 模式激活时，若 come 模式正在运行，立即强制停止 come 模式
+          并发布零速，确保同一时刻只有一个控制节点输出 /cmd_vel。
+        """
+        was_inactive = not self.follow_mode_active
         self.follow_mode_active = msg.data
+        if self.follow_mode_active and was_inactive and \
+                self.current_state != ComeModeState.IDLE:
+            self.get_logger().warn(
+                "🚫 follow 模式激活，come 模式正在运行 → 强制退出 come 模式！")
+            self._stop_come_mode()
+
+    def _stop_come_mode(self):
+        """强制停止 come 模式：发布零速度指令，重置状态机到 IDLE。
+        用于 follow/come 模式互斥切换时的紧急停车，保证 /cmd_vel 控制权及时交接。"""
+        stop_twist = Twist()
+        stop_twist.linear.x = 0.0
+        stop_twist.angular.z = 0.0
+        self.vel_pub.publish(stop_twist)
+        self.current_state = ComeModeState.IDLE
+        self.detection_enabled = False
+        self.window_open = False
+        self.releasing_torque = False
+        self.center_confirm_count = 0
+        self.get_logger().info("🛑 come 模式已强制停止，/cmd_vel 控制权归还 follow 节点。")
 
     def distance_cb(self, msg):
         self.person_distance = msg.data
@@ -177,6 +203,15 @@ class ComeModeNode(Node):
             return frame
 
     def main_loop(self):
+        # ── 互斥守卫：follow 模式激活时 come 模式必须完全静默 ────────────────────
+        # 即使通过其他路径（如定时器遗留）仍处于非 IDLE 状态，也在此处拦截，
+        # 确保任意时刻只有唯一控制节点向 /cmd_vel 发布指令。
+        if self.follow_mode_active:
+            if self.current_state != ComeModeState.IDLE:
+                # follow 模式激活但 come 状态机还未复位 → 补充强制停止
+                self._stop_come_mode()
+            return
+
         twist = Twist()
         twist.linear.x = 0.0
         twist.angular.z = 0.0
