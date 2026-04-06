@@ -206,6 +206,11 @@ class ComeModeNode(Node):
                 except:
                     pass
 
+        # IDLE 状态下不发布任何速度指令，停止占用 /cmd_vel，
+        # 避免与 turn_to_person_node / follow_by_distance_node 产生指令冲突。
+        if self.current_state == ComeModeState.IDLE:
+            return
+
         # 发布速度
         self.vel_pub.publish(twist)
 
