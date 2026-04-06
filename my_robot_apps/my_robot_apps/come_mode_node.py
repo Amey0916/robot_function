@@ -19,7 +19,9 @@ drawing_utils = mp.tasks.vision.drawing_utils
 drawing_styles = mp.tasks.vision.drawing_styles
 vision = mp.tasks.vision
 
-class ComeModeState:
+# 停车保持帧数：进入 STOP 阶段后连续发多帧零速，防止惯性冲过目标
+# 计算：10 帧 × ~33ms（30Hz） ≈ 0.33s 持续零速
+_STOP_HOLD_FRAMES = 10
     IDLE = 0
     ROTATING = 1
     ROTATING_STABILIZING = 2  # 回正释放扭力阶段
@@ -81,6 +83,10 @@ class ComeModeNode(Node):
         self.release_start_time = 0.0
         self.releasing_torque = False
         self.stabilize_start_time = 0.0
+
+        # ── 停车保持计数 ─────────────────────────────────────────────────────────
+        # 进入 STOP 阶段后连续发多帧零速，防止惯性冲过目标（修复：距离≤0.6m时防止冲过）
+        self.stop_hold_count = 0
 
         self.detection_enabled = False
         self.window_name = "Come Mode"
@@ -292,13 +298,24 @@ class ComeModeNode(Node):
             elif self.person_distance > self.target_distance:
                 twist.linear.x = 0.13
             else:
-                twist.linear.x =0.0
+                # 距离 ≤ 0.6m：立即停车并进入停车保持阶段，连续多帧下发零速，防止惯性冲过
+                twist.linear.x = 0.0
+                self.stop_hold_count = _STOP_HOLD_FRAMES  # ~0.33s 持续零速
                 self.current_state = ComeModeState.STOP
 
         elif self.current_state == ComeModeState.STOP:
-            self.detection_enabled = False
-            self.window_open = False
-            self.current_state = ComeModeState.IDLE
+            # 停车保持阶段：持续下发 linear.x=0，连续多帧确保小车稳稳停住，防止惯性冲过目标
+            # 修复要点：原来只在进入 STOP 的同帧发一次零速就立即跳回 IDLE，
+            #           底盘来不及响应；现在保持 stop_hold_count 帧后再退出。
+            twist.linear.x = 0.0
+            if self.stop_hold_count > 0:
+                self.stop_hold_count -= 1
+                # 保持在 STOP 状态，继续发布零速（由底部 publish 语句统一发出）
+            else:
+                # 零速帧已发完，正式退出 come 模式
+                self.detection_enabled = False
+                self.window_open = False
+                self.current_state = ComeModeState.IDLE
 
         # -------------------- 绘制 --------------------
         if self.latest_frame is not None:

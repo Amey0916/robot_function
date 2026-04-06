@@ -16,7 +16,10 @@ _PUBLISH_HZ = 20
 MAX_FOLLOW_SPEED = 0.5
 
 
-class FollowByDistanceNode(Node):
+# 旋转制动等待时间（秒）：旋转结束后本节点延迟发布的时长
+# 必须略长于 turn_to_person_node 的制动期（_BRAKE_FRAMES / 30Hz ≈ 0.17s），
+# 确保制动完成后 /cmd_vel 控制权才交接到本节点，彻底消除两节点同时写 /cmd_vel 的冲突。
+_ROTATION_HOLD_DELAY = 0.25  # 秒
     def __init__(self):
         super().__init__('follow_by_distance_node')
         self.create_subscription(Float32, '/person_distance', self.cb_distance, 10)
@@ -41,6 +44,13 @@ class FollowByDistanceNode(Node):
         # 缓存上一次计算出的速度指令，由定时器持续发布（提高频率）
         self._cached_twist = Twist()
 
+        # ── 旋转制动等待期 ────────────────────────────────────────────────────────
+        # 修复要点：当 turn_to_person_node 从旋转（left/right）切回 center/none 时，
+        # 会连续发多帧零角速度制动（≈0.17s）。为避免本节点同期发布前进速度产生冲突
+        # （两节点同时写 /cmd_vel 导致速度互相覆盖），本节点在过渡期内短暂持等，
+        # 等待制动完成后再接管 /cmd_vel，确保任意时刻只有唯一节点发布速度。
+        self.rotation_hold_until = 0.0  # 等待到期时间戳（monotonic）
+
         # 高频定时器：以 _PUBLISH_HZ Hz 持续向 /cmd_vel 发布缓存的指令，
         # 避免因距离消息间隔导致的"走—停—走—停"现象
         self.create_timer(1.0 / _PUBLISH_HZ, self._timer_pub)
@@ -62,10 +72,24 @@ class FollowByDistanceNode(Node):
             self.get_logger().info("🔒 come 模式激活，follow_by_distance_node 停止输出 /cmd_vel。")
 
     def cb_orientation(self, msg):
+        # 记录上次方向，用于检测旋转→停止的切换时刻
+        prev_orientation = self.orientation
         self.orientation = msg.data
         # 收到方向指令：激活节点并刷新计时器
         self.active = True
         self.last_orientation_time = time.monotonic()
+
+        # ── 旋转→停止过渡：短暂暂停本节点发布，让 turn_to_person_node 先完成制动 ───
+        # 修复要点（问题3）：旋转结束后 follow_by_distance_node 立即接管会与
+        # turn_to_person_node 的制动零帧争抢 /cmd_vel，导致前进指令被零速覆盖，
+        # 小车虽然日志显示有速度却无法前进。
+        # 解决方案：过渡期内延迟 0.25s（略长于 turn_to_person_node 的 0.17s 制动期），
+        # 确保制动完成、/cmd_vel 控制权交接干净后再开始发布前进速度。
+        if prev_orientation in ('left', 'right') and self.orientation in ('center', 'none'):
+            self.rotation_hold_until = time.monotonic() + _ROTATION_HOLD_DELAY
+            self.get_logger().info(
+                "旋转结束，等待 0.25s 让 turn_to_person_node 完成制动后再接管 /cmd_vel。")
+
         self.get_logger().info(f"收到手势方向：{self.orientation}")
 
     def _check_timeout(self):
@@ -88,11 +112,12 @@ class FollowByDistanceNode(Node):
         if self.come_mode_active:
             return
 
-        # ── 仅在 center 方向下计算速度；左/右方向时不更新缓存 ────────────────────
+        # ── 仅在 center 或 none 方向下计算速度；左/右方向时不更新缓存 ─────────────
         # 左/右方向由 turn_to_person_node 独占控制 /cmd_vel，本节点此时不发布任何指令，
         # 防止两个节点同时写 /cmd_vel 造成速度相互覆盖或车轮抖动。
-        if self.orientation != "center":
-            # 方向非 center：清零缓存但不发布（定时器看到 orientation!=center 也会跳过）
+        # 修复（问题3）：同时允许 orientation='none'，确保旋转结束后能接管前进控制。
+        if self.orientation not in ('center', 'none'):
+            # 方向非 center/none：清零缓存但不发布（定时器也会跳过）
             self._cached_twist = Twist()
             return
 
@@ -128,9 +153,10 @@ class FollowByDistanceNode(Node):
         """高频定时发布缓存的速度指令。
         修复要点：
           1. come 模式激活时完全不发布（互斥）。
-          2. 方向非 center 时不发布（让 turn_to_person_node 独占此时的 /cmd_vel），
+          2. 旋转制动等待期内不发布，让 turn_to_person_node 先完成制动（互斥过渡）。
+          3. 方向非 center/none 时不发布（让 turn_to_person_node 独占此时的 /cmd_vel），
              避免两节点同时写 /cmd_vel 导致的速度覆盖与抖动。
-          3. 方向为 center 且激活时，每帧都发布缓存速度，保证前进指令连续，
+          4. 方向为 center/none 且激活时，每帧都发布缓存速度，保证前进指令连续，
              彻底消除"走一帧停两帧"的走走停停现象。
         """
         self._check_timeout()
@@ -142,12 +168,17 @@ class FollowByDistanceNode(Node):
         if not self.active:
             return
 
-        # 方向控制互斥：非 center 时让 turn_to_person_node 独占 /cmd_vel
-        # 本节点不发布任何内容（包括零速），避免覆盖转向指令
-        if self.orientation != "center":
+        # ── 旋转制动等待期：让 turn_to_person_node 先完成零速制动帧后再接管 ────────
+        # 修复（问题3）：确保前进时单节点持续高频 publish，不被制动零帧影响。
+        if time.monotonic() < self.rotation_hold_until:
             return
 
-        # center 方向 + 激活状态：每帧持续发布缓存速度，机器人连贯前进
+        # 方向控制互斥：非 center/none 时让 turn_to_person_node 独占 /cmd_vel
+        # 本节点不发布任何内容（包括零速），避免覆盖转向指令
+        if self.orientation not in ('center', 'none'):
+            return
+
+        # center/none 方向 + 激活状态：每帧持续发布缓存速度，机器人连贯前进
         self.pub.publish(self._cached_twist)
 
 def main(args=None):
