@@ -130,9 +130,9 @@ class ComeModeNode(Node):
             # 满足任一即视为"检测到人脸"，代表当前是正面或基本正面姿态
             # 用途：只有同时检测到人脸 + 两肩中点，才判定为正面人，允许旋转定位
             face_visible = (
-                lm[0].visibility > 0.5 or   # 鼻尖
-                lm[2].visibility > 0.5 or   # 左眼
-                lm[5].visibility > 0.5      # 右眼
+                lm[0].visibility > 0.85 or   # 鼻尖
+                lm[2].visibility > 0.85 or   # 左眼
+                lm[5].visibility > 0.85      # 右眼
             )
             self.face_detected = face_visible
 
