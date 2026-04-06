@@ -87,7 +87,7 @@ class ComeModeNode(Node):
         self.pose_model_path = "/home/yhs/mediapipe_models/pose_landmarker_lite.task"
         self.pose_options = PoseLandmarkerOptions(
             base_options=BaseOptions(model_asset_path=self.pose_model_path),
-            running_mode=VisionRunningMode.VIDEO, num_poses=1)
+            running_mode=VisionRunningMode.VIDEO, num_poses=1,min_pose_detection_confidence=0.7, min_pose_presence_confidence=0.7, min_tracking_confidence=0.7)
         self.pose_landmarker = PoseLandmarker.create_from_options(self.pose_options)
         self.timer = self.create_timer(1/30, self.main_loop)
 
@@ -130,9 +130,9 @@ class ComeModeNode(Node):
             # 满足任一即视为"检测到人脸"，代表当前是正面或基本正面姿态
             # 用途：只有同时检测到人脸 + 两肩中点，才判定为正面人，允许旋转定位
             face_visible = (
-                lm[0].visibility > 0.85 or   # 鼻尖
-                lm[2].visibility > 0.85 or   # 左眼
-                lm[5].visibility > 0.85      # 右眼
+                lm[0].visibility > 0.70 or   # 鼻尖
+                lm[2].visibility > 0.70 or   # 左眼
+                lm[5].visibility > 0.70      # 右眼
             )
             self.face_detected = face_visible
 
