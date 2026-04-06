@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 import rclpy
 from rclpy.node import Node
-from std_msgs.msg import String, Float32
+from std_msgs.msg import String, Float32, Bool
 from geometry_msgs.msg import Twist
 from sensor_msgs.msg import Image
 from cv_bridge import CvBridge
@@ -69,6 +69,14 @@ class ComeModeNode(Node):
         # 只有同时检测到人脸和两肩中点，才判定为"正面人"，允许进入旋转锁定
         self.face_detected = False
 
+        # ── 互斥模式标志 ──────────────────────────────────────────────────────
+        # 追踪 follow 模式是否已激活（由 gesture_body_detection_node 发布）。
+        # 若 follow 模式已激活，任何路径下的 come 激活请求均被拒绝。
+        self.follow_mode_active = False
+
+        # 用于检测 come 模式激活状态是否发生变化，避免重复发布相同消息
+        self._come_mode_was_active = False
+
         # 释放扭力专用
         self.release_start_time = 0.0
         self.releasing_torque = False
@@ -82,7 +90,12 @@ class ComeModeNode(Node):
         self.create_subscription(String, '/car/control', self.voice_cb, 10)
         self.create_subscription(Float32, '/person_distance', self.distance_cb, 10)
         self.create_subscription(Image, '/camera_frame', self.frame_cb, 10)
+        # 订阅 follow 模式激活状态，用于互斥判断（follow 激活时禁止进入 come 模式）
+        self.create_subscription(Bool, '/follow_mode_active', self.follow_mode_cb, 10)
+
         self.vel_pub = self.create_publisher(Twist, '/cmd_vel', 10)
+        # 发布 come 模式激活状态，供其它节点（如 gesture_body_detection_node）实现互斥
+        self.come_mode_pub = self.create_publisher(Bool, '/come_mode_active', 10)
 
         self.pose_model_path = "/home/yhs/mediapipe_models/pose_landmarker_lite.task"
         self.pose_options = PoseLandmarkerOptions(
@@ -92,11 +105,27 @@ class ComeModeNode(Node):
         self.timer = self.create_timer(1/30, self.main_loop)
 
     def gesture_cb(self, msg):
+        # 互斥检查：follow 模式激活时拒绝 come 激活请求
         if msg.data == "come" and self.current_state == ComeModeState.IDLE:
+            if self.follow_mode_active:
+                self.get_logger().warn(
+                    "🚫 互斥拒绝：当前处于 follow 模式，无法激活 come 模式（手势触发）！")
+                return
             self.come_triggered = True
+
     def voice_cb(self, msg):
+        # 互斥检查：follow 模式激活时拒绝 come 激活请求
         if msg.data == "come" and self.current_state == ComeModeState.IDLE:
+            if self.follow_mode_active:
+                self.get_logger().warn(
+                    "🚫 互斥拒绝：当前处于 follow 模式，无法激活 come 模式（语音触发）！")
+                return
             self.come_triggered = True
+
+    def follow_mode_cb(self, msg):
+        """接收 follow 模式激活状态，更新互斥标志"""
+        self.follow_mode_active = msg.data
+
     def distance_cb(self, msg):
         self.person_distance = msg.data
     def frame_cb(self, msg):
@@ -253,6 +282,16 @@ class ComeModeNode(Node):
 
         if self.current_state != ComeModeState.IDLE:
             self.vel_pub.publish(twist)
+
+        # ── 发布 come 模式激活状态（仅在状态变化时发布，避免消息洪泛） ────────────
+        come_active_now = (self.current_state != ComeModeState.IDLE)
+        if come_active_now != self._come_mode_was_active:
+            status_msg = Bool()
+            status_msg.data = come_active_now
+            self.come_mode_pub.publish(status_msg)
+            self._come_mode_was_active = come_active_now
+            self.get_logger().info(
+                f"📢 come 模式状态变更：{'激活' if come_active_now else '已退出'}")
 
     def destroy_node(self):
         cv2.destroyAllWindows()
