@@ -27,6 +27,9 @@ class ComeModeState:
     MOVING = 2
     STOP = 3
 
+# 居中确认所需的连续帧数，用于消除旋转停止后的惯性过冲
+CENTER_CONFIRM_FRAMES = 3
+
 # 人体骨架绘制函数
 def draw_pose_landmarks_on_image(rgb_image, detection_result):
     pose_landmarks_list = detection_result.pose_landmarks
@@ -57,6 +60,7 @@ class ComeModeNode(Node):
         self.frame_timestamp = 0
         self.latest_frame = None
         self.bridge = CvBridge()
+        self.center_confirm_count = 0   # 居中确认帧计数，防止惯性过冲
 
         # 窗口控制
         self.detection_enabled = False
@@ -162,18 +166,26 @@ class ComeModeNode(Node):
                 self.window_open = True
                 self.person_detected = False
                 self.shoulder_mid_x = 0.0
+                self.center_confirm_count = 0
                 self.get_logger().info("▶️ 开启检测 + 显示窗口")
 
         elif self.current_state == ComeModeState.ROTATING:
             self.detection_enabled = True
             if self.person_detected and 5/12 <= self.shoulder_mid_x <= 7/12:
-                self.current_state = ComeModeState.MOVING
+                # 居中时不再给角速度，等待连续若干帧确认稳住后再推进
+                self.center_confirm_count += 1
+                twist.angular.z = 0.0
+                if self.center_confirm_count >= CENTER_CONFIRM_FRAMES:
+                    self.center_confirm_count = 0
+                    self.current_state = ComeModeState.MOVING
             else:
+                self.center_confirm_count = 0
                 twist.angular.z = 0.2
 
         elif self.current_state == ComeModeState.MOVING:
             self.detection_enabled = True
             if not self.person_detected:
+                self.center_confirm_count = 0
                 self.current_state = ComeModeState.ROTATING
                 twist.angular.z = 0.2
             elif self.person_distance <= 0.0:
