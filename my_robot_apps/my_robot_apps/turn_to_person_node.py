@@ -7,6 +7,10 @@ import time
 # 超时阈值：超过此时间未收到 /cmd_orientation 则视为跟随模式已退出，停止发布
 _FOLLOW_TIMEOUT = 1.0  # 秒
 
+# 旋转制动帧数：方向切回 center/none 后连续下发零角速度的帧数
+# 计算：5 帧 × (1/30s) ≈ 0.17s 制动时间；不提升定时器频率，仅通过多帧补偿实现制动
+_BRAKE_FRAMES = 5
+
 
 class TurnToPersonNode(Node):
     def __init__(self):
@@ -18,6 +22,12 @@ class TurnToPersonNode(Node):
         # 从而避免与 come_mode_node / follow_by_distance_node 产生指令冲突。
         self.active = False
         self.last_cmd_time = None          # 上次收到 /cmd_orientation 的时间戳
+
+        # ── 旋转制动计数 ──────────────────────────────────────────────────────────
+        # 修复要点：方向从 left/right 切换到 center/none 时，连续多帧下发 angular.z=0，
+        # 低频定时器下也能可靠刹稳，防止角速度惯性导致的打滑过冲。
+        # 不提升定时器频率，仅通过多帧补偿实现制动。
+        self.zero_count = 0  # 剩余需要下发的零角速度帧数
 
         # ── 互斥订阅：come 模式激活时本节点必须完全停止发布 /cmd_vel ──────────────
         # come_mode_node 发布 /come_mode_active（Bool），True 表示 come 模式正在运行。
@@ -42,10 +52,22 @@ class TurnToPersonNode(Node):
             self.get_logger().info("🔒 come 模式激活，turn_to_person_node 停止输出 /cmd_vel。")
 
     def cmd_cb(self, msg):
+        # 记录上次方向，用于检测旋转→停止的切换时刻
+        prev_direction = self.direction
         # 收到新方向：更新方向、激活节点并刷新计时器
         self.direction = msg.data
         self.active = True
         self.last_cmd_time = time.monotonic()
+
+        # ── 旋转→停止过渡处理 ─────────────────────────────────────────────────────
+        # 从旋转（left/right）切换到中心（center/none）时，重置制动计数，
+        # 后续定时器将连续发多帧 angular.z=0，确保低频下也能刹稳，防止打滑过冲。
+        if prev_direction in ('left', 'right') and self.direction in ('center', 'none'):
+            self.zero_count = _BRAKE_FRAMES  # ~0.17s 制动零速
+        elif self.direction in ('left', 'right'):
+            # 重新进入旋转：清除制动计数
+            self.zero_count = 0
+
         # 仅当方向为 left/right 时立即发布一次，保证实时转向响应
         # center/none 方向由 follow_by_distance_node 负责，本节点不发布
         if self.direction in ('left', 'right') and not self.come_mode_active:
@@ -71,7 +93,7 @@ class TurnToPersonNode(Node):
 
     def publish_twist(self):
         """定时回调（30Hz）。
-        超时检测 → 互斥检查 → 方向检查，三道关卡确保只在恰当条件下发布转向指令。"""
+        超时检测 → 互斥检查 → 制动零帧检查 → 方向检查，四道关卡确保只在恰当条件下发布转向指令。"""
         # 超时检测：若已超过 _FOLLOW_TIMEOUT 秒未收到方向指令，则认为跟随模式已关闭
         if self.last_cmd_time is not None and \
                 (time.monotonic() - self.last_cmd_time) > _FOLLOW_TIMEOUT:
@@ -84,6 +106,17 @@ class TurnToPersonNode(Node):
         # 仅在激活状态（跟随模式运行中）时才发布，其余时候直接 return 不占用 /cmd_vel
         if not self.active:
             return
+
+        # ── 旋转制动：连续多帧下发零角速度，防止打滑过冲 ───────────────────────
+        # 修复要点：原来 center/none 时完全不发布，底盘依靠惯性滑行停止，有时打滑。
+        # 现在在方向切回 center/none 后的若干帧内，持续发布 angular.z=0，
+        # 主动制动消除残余角速度，即使定时器频率低（30Hz）也可刹稳，不允许过冲。
+        if self.zero_count > 0 and self.direction in ('center', 'none'):
+            twist = Twist()
+            twist.angular.z = 0.0  # 主动清零角速度
+            self.pub.publish(twist)
+            self.zero_count -= 1
+            return  # 制动帧发完前不做其他发布
 
         # center/none 方向时不发布，避免零速覆盖 follow_by_distance_node 的前进指令
         if self.direction not in ('left', 'right'):
