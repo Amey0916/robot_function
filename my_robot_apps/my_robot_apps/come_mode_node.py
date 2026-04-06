@@ -27,6 +27,9 @@ class ComeModeState:
     MOVING = 2
     STOP = 3
 
+# 居中确认所需的连续帧数，用于消除旋转停止后的惯性过冲
+CENTER_CONFIRM_FRAMES = 3
+
 # 人体骨架绘制函数
 def draw_pose_landmarks_on_image(rgb_image, detection_result):
     pose_landmarks_list = detection_result.pose_landmarks
@@ -172,7 +175,7 @@ class ComeModeNode(Node):
                 # 居中时不再给角速度，等待连续若干帧确认稳住后再推进
                 self.center_confirm_count += 1
                 twist.angular.z = 0.0
-                if self.center_confirm_count >= 3:
+                if self.center_confirm_count >= CENTER_CONFIRM_FRAMES:
                     self.center_confirm_count = 0
                     self.current_state = ComeModeState.MOVING
             else:

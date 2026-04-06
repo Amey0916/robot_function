@@ -20,7 +20,7 @@ class TurnToPersonNode(Node):
 
         self.create_subscription(String, '/cmd_orientation', self.cmd_cb, 10)
         self.pub = self.create_publisher(Twist, '/cmd_vel', 10)
-        self.timer = self.create_timer(1/30, self.publish_twist)  # 30Hz，与检测帧率匹配，保证转向连贯
+        self.timer = self.create_timer(1.0/30.0, self.publish_twist)  # 30Hz，与检测帧率匹配，保证转向连贯
 
     def cmd_cb(self, msg):
         # 收到新方向：更新方向、激活节点并刷新计时器，同时立即发布一次保证实时响应
