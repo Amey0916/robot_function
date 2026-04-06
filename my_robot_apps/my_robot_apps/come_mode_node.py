@@ -57,6 +57,7 @@ class ComeModeNode(Node):
         self.frame_timestamp = 0
         self.latest_frame = None
         self.bridge = CvBridge()
+        self.center_confirm_count = 0   # 居中确认帧计数，防止惯性过冲
 
         # 窗口控制
         self.detection_enabled = False
@@ -162,18 +163,26 @@ class ComeModeNode(Node):
                 self.window_open = True
                 self.person_detected = False
                 self.shoulder_mid_x = 0.0
+                self.center_confirm_count = 0
                 self.get_logger().info("▶️ 开启检测 + 显示窗口")
 
         elif self.current_state == ComeModeState.ROTATING:
             self.detection_enabled = True
             if self.person_detected and 5/12 <= self.shoulder_mid_x <= 7/12:
-                self.current_state = ComeModeState.MOVING
+                # 居中时不再给角速度，等待连续若干帧确认稳住后再推进
+                self.center_confirm_count += 1
+                twist.angular.z = 0.0
+                if self.center_confirm_count >= 3:
+                    self.center_confirm_count = 0
+                    self.current_state = ComeModeState.MOVING
             else:
+                self.center_confirm_count = 0
                 twist.angular.z = 0.2
 
         elif self.current_state == ComeModeState.MOVING:
             self.detection_enabled = True
             if not self.person_detected:
+                self.center_confirm_count = 0
                 self.current_state = ComeModeState.ROTATING
                 twist.angular.z = 0.2
             elif self.person_distance <= 0.0:
