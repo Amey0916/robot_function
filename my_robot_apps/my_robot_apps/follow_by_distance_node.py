@@ -74,10 +74,10 @@ class FollowByDistanceNode(Node):
             twist.linear.x = -0.1
             self.get_logger().info(f"距离:{dist:.2f}米 → 过近后退(-0.1m/s)")
         elif dist >= 1.0:
-            twist.linear.x = 0.2
-            self.get_logger().info(f"距离:{dist:.2f}米 → 距离较远前进(0.2m/s)")
+            twist.linear.x = 0.5
+            self.get_logger().info(f"距离:{dist:.2f}米 → 距离较远前进(0.5m/s)")
         else:
-            speed = (dist - 0.3) / (1.0 - 0.3) * 0.2
+            speed = (dist - 0.3) / (1.0 - 0.3) * 0.5
             twist.linear.x = speed
             self.get_logger().info(f"距离:{dist:.2f}米 → 渐进速度({speed:.2f}m/s)")
 
