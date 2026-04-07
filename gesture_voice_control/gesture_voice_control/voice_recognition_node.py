@@ -54,13 +54,29 @@ class VoiceRecognitionNode(Node):
         # 定时器
         self.timer = self.create_timer(1.0, self.listen_voice)
         
-        # 指令映射
+        # ✅ 中英双语指令映射（中文+英文对应同一个指令）
         self.command_map = {
+            # 停止跟随
             "停止跟随": ("car", "stop_follow"),
+            "stop follow": ("car", "stop_follow"),
+            "stop": ("car", "stop_follow"),
+            
+            # 跟随
             "跟随": ("car", "follow"),
+            "follow": ("car", "follow"),
+            
+            # 打开
             "打开": ("trash_bin", "open"),
+            "open": ("trash_bin", "open"),
+            
+            # 关闭
             "关闭": ("trash_bin", "close"),
-            "过来": ("car", "come")
+            "close": ("trash_bin", "close"),
+            
+            # 过来
+            "过来": ("car", "come"),
+            "come": ("car", "come"),
+            "come here": ("car", "come"),
         }
 
     def listen_voice(self):
@@ -78,15 +94,17 @@ class VoiceRecognitionNode(Node):
                 f.write(audio.get_wav_data())
             self.get_logger().info(f"录音已保存到: {audio_file}")
             
-            text = self.recognizer.recognize_google(audio, language='zh-CN')
-            text = text.strip().replace(" ", "").replace("，", "").replace("。", "")
+            # ✅ 双语识别：支持中文 + 英文
+            text = self.recognizer.recognize_google(audio, language='zh-CN,en-US')
+            text = text.strip().replace("，", "").replace("。", "")
             self.get_logger().info(f"识别到指令（清理后）: {text}")
             self.parse_command(text)
             
         except sr.WaitTimeoutError:
             pass
         except sr.UnknownValueError:
-            self.get_logger().warn("无法识别语音！请清晰说：打开/关闭/跟随/过来/停止跟随")
+            # ✅ 双语提示
+            self.get_logger().warn("无法识别语音！请清晰说：打开/关闭/跟随/过来/停止跟随 | open/close/follow/come/stop follow")
         except sr.RequestError as e:
             self.get_logger().error(f"识别失败（需外网）: {e}")
         except Exception as e:
